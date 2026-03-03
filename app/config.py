@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     onprem_base_url: str = "http://localhost:9000"
     onprem_timeout_seconds: int = 30
 
+    # PostgreSQL — DealTerms DB (on-prem)
+    pg_host: str = "localhost"
+    pg_port: int = 5432
+    pg_database: str = "DealTerms"
+    pg_user: str = "postgres"
+    pg_password: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

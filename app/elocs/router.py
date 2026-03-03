@@ -25,22 +25,53 @@ async def list_elocs(
     user: UserInfo = Depends(get_current_user),
 ):
     """List ELOCs for the authenticated user's company."""
-    elocs = await service.get_company_elocs(user.company_id, status_filter)
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    elocs = await service.get_company_elocs(company_id, status_filter)
     return elocs
+
+
+@router.get("/shares-available")
+async def get_shares_available(
+    user: UserInfo = Depends(get_current_user),
+):
+    """Get available shares for all pricing periods from on-prem server."""
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    try:
+        return await service.get_shares_available(company_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to fetch shares available: {exc}",
+        )
 
 
 @router.get("/{eloc_id}", response_model=ElocDetail)
 async def get_eloc(
-    eloc_id: str,
+    eloc_id: int,
     user: UserInfo = Depends(get_current_user),
 ):
-    """Get ELOC detail: pricing periods, shares, current state."""
-    try:
-        detail = await service.get_eloc_detail(eloc_id, user.company_id)
-    except Exception as exc:
+    """Get ELOC detail: pricing periods, shares, deal terms."""
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Unable to reach calculation server: {exc}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    detail = await service.get_eloc_detail(eloc_id, company_id)
+    if not detail:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ELOC deal not found",
         )
     return detail
 

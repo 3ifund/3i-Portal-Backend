@@ -61,6 +61,17 @@ async def get_company_elocs(company_id: str) -> list[dict]:
     return response.json()
 
 
+async def get_shares_available(symbol: str) -> dict:
+    """
+    Fetch available shares calculation from the on-prem C# server.
+    Returns all pricing periods for the company's active ELOC.
+    """
+    client = _get_client()
+    response = await client.get(f"/api/sharesavailable/{symbol}")
+    response.raise_for_status()
+    return response.json()
+
+
 async def submit_purchase_notice(
     eloc_id: str,
     company_id: str,

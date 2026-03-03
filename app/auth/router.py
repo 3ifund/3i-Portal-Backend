@@ -4,7 +4,7 @@ Handles login and user info endpoints.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from passlib.hash import bcrypt
+import bcrypt
 
 from app.auth.jwt import create_access_token
 from app.auth.models import LoginRequest, LoginResponse, UserInfo
@@ -20,7 +20,9 @@ async def login(request: LoginRequest):
     db = get_db()
     user = await db["users"].find_one({"user_id": request.user_id})
 
-    if not user or not bcrypt.verify(request.password, user.get("password_hash", "")):
+    if not user or not bcrypt.checkpw(
+        request.password.encode(), user.get("password_hash", "").encode()
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid User ID or password",
