@@ -190,6 +190,20 @@ async def get_shares_available(company_id: int) -> dict:
     return result
 
 
+async def get_action_items(company_id: int) -> list[dict]:
+    """
+    Fetch pending action items for the company from MongoDB.
+    Stub: will query MongoDB for items requiring user action
+    (e.g., documents to countersign, missing information).
+    """
+    logger.info("get_action_items company_id=%s", company_id)
+    # TODO: Query MongoDB for pending action items
+    # e.g., eloc_data_collection().find({"company_id": company_id, "action_required": True})
+    items = []
+    logger.info("  Returning %d action items (stub)", len(items))
+    return items
+
+
 async def submit_purchase_notice(
     eloc_id: str,
     company_id: str,

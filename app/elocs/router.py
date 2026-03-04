@@ -64,6 +64,23 @@ async def get_shares_available(
         )
 
 
+@router.get("/action-items")
+async def get_action_items(
+    user: UserInfo = Depends(get_current_user),
+):
+    """Get pending action items for the authenticated user's company."""
+    logger.info("GET /elocs/action-items user=%s company_id=%s", user.user_id, user.company_id)
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    items = await service.get_action_items(company_id)
+    logger.info("  → returned %d action items", len(items))
+    return items
+
+
 @router.get("/{eloc_id}", response_model=ElocDetail)
 async def get_eloc(
     eloc_id: int,
