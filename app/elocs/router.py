@@ -3,6 +3,8 @@
 Endpoints for ELOC listing, detail, workflow, documents, and purchase notices.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.dependencies import get_current_user
@@ -16,6 +18,7 @@ from app.elocs.models import (
     WorkflowResponse,
 )
 
+logger = logging.getLogger("portal.elocs")
 router = APIRouter()
 
 
@@ -25,6 +28,7 @@ async def list_elocs(
     user: UserInfo = Depends(get_current_user),
 ):
     """List ELOCs for the authenticated user's company."""
+    logger.info("GET /elocs user=%s company_id=%s status=%s", user.user_id, user.company_id, status_filter)
     company_id = int(user.company_id) if user.company_id else None
     if company_id is None:
         raise HTTPException(
@@ -32,6 +36,7 @@ async def list_elocs(
             detail="User has no company_id assigned",
         )
     elocs = await service.get_company_elocs(company_id, status_filter)
+    logger.info("  → returned %d ELOCs", len(elocs))
     return elocs
 
 
@@ -40,6 +45,7 @@ async def get_shares_available(
     user: UserInfo = Depends(get_current_user),
 ):
     """Get available shares for all pricing periods from on-prem server."""
+    logger.info("GET /elocs/shares-available user=%s company_id=%s", user.user_id, user.company_id)
     company_id = int(user.company_id) if user.company_id else None
     if company_id is None:
         raise HTTPException(
@@ -47,8 +53,11 @@ async def get_shares_available(
             detail="User has no company_id assigned",
         )
     try:
-        return await service.get_shares_available(company_id)
+        result = await service.get_shares_available(company_id)
+        logger.info("  → shares-available returned OK (keys: %s)", list(result.keys()) if isinstance(result, dict) else type(result))
+        return result
     except Exception as exc:
+        logger.error("  → shares-available FAILED: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Unable to fetch shares available: {exc}",
@@ -61,6 +70,7 @@ async def get_eloc(
     user: UserInfo = Depends(get_current_user),
 ):
     """Get ELOC detail: pricing periods, shares, deal terms."""
+    logger.info("GET /elocs/%s user=%s company_id=%s", eloc_id, user.user_id, user.company_id)
     company_id = int(user.company_id) if user.company_id else None
     if company_id is None:
         raise HTTPException(
@@ -69,10 +79,12 @@ async def get_eloc(
         )
     detail = await service.get_eloc_detail(eloc_id, company_id)
     if not detail:
+        logger.warning("  → ELOC %s not found", eloc_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="ELOC deal not found",
         )
+    logger.info("  → ELOC %s returned OK", eloc_id)
     return detail
 
 
@@ -82,7 +94,9 @@ async def get_workflow(
     user: UserInfo = Depends(get_current_user),
 ):
     """Get workflow state and event data from MongoDB."""
+    logger.info("GET /elocs/%s/workflow user=%s", eloc_id, user.user_id)
     workflow = await service.get_eloc_workflow(eloc_id)
+    logger.info("  → workflow steps: %s", list(workflow.get("steps", {}).keys()))
     return workflow
 
 
@@ -93,12 +107,15 @@ async def get_document(
     user: UserInfo = Depends(get_current_user),
 ):
     """Get the document for a specific workflow step."""
+    logger.info("GET /elocs/%s/documents/%s user=%s", eloc_id, step, user.user_id)
     doc = await service.get_eloc_document(eloc_id, step)
     if not doc:
+        logger.warning("  → document not found for eloc=%s step=%s", eloc_id, step)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document not found for this step",
         )
+    logger.info("  → document returned OK")
     return doc
 
 
@@ -109,6 +126,10 @@ async def submit_purchase_notice(
     user: UserInfo = Depends(get_current_user),
 ):
     """Submit a purchase notice to the on-prem server."""
+    logger.info(
+        "POST /elocs/%s/purchase-notice user=%s period=%s shares=%d",
+        eloc_id, user.user_id, request.pricing_period, request.shares,
+    )
     if request.shares < 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -120,11 +141,13 @@ async def submit_purchase_notice(
             eloc_id, user.company_id, request.pricing_period, request.shares
         )
     except Exception as exc:
+        logger.error("  → purchase notice FAILED: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Unable to submit purchase notice: {exc}",
         )
 
+    logger.info("  → purchase notice result: %s", result)
     return PurchaseNoticeResponse(
         status=result.get("status", "acknowledged"),
         message=result.get("message", "Purchase notice submitted successfully"),

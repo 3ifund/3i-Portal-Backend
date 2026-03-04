@@ -4,11 +4,16 @@ Queries the on-prem PostgreSQL DealTerms database for company, ELOC deal,
 and pricing period data.
 """
 
+import logging
+
 from app.database.postgres import get_pool
+
+logger = logging.getLogger("portal.dealterms")
 
 
 async def get_company_by_id(company_id: int) -> dict | None:
     """Fetch a company by its numeric company_id."""
+    logger.debug("get_company_by_id(%s)", company_id)
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -18,11 +23,16 @@ async def get_company_by_id(company_id: int) -> dict | None:
         """,
         company_id,
     )
+    if row:
+        logger.debug("  → found: %s (%s)", row["name"], row["symbol"])
+    else:
+        logger.warning("  → company_id=%s not found", company_id)
     return dict(row) if row else None
 
 
 async def get_company_by_symbol(symbol: str) -> dict | None:
     """Fetch a company by its ticker symbol."""
+    logger.debug("get_company_by_symbol(%s)", symbol)
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -32,6 +42,10 @@ async def get_company_by_symbol(symbol: str) -> dict | None:
         """,
         symbol,
     )
+    if row:
+        logger.debug("  → found: %s (id=%s)", row["name"], row["company_id"])
+    else:
+        logger.warning("  → symbol=%s not found", symbol)
     return dict(row) if row else None
 
 
@@ -40,6 +54,7 @@ async def get_active_deals_for_company(company_id: int) -> list[dict]:
     Fetch all active ELOC deals for a company.
     A deal is active if it has remaining commitment and hasn't expired.
     """
+    logger.debug("get_active_deals_for_company(%s)", company_id)
     pool = get_pool()
     rows = await pool.fetch(
         """
@@ -64,11 +79,13 @@ async def get_active_deals_for_company(company_id: int) -> list[dict]:
         """,
         company_id,
     )
+    logger.debug("  → %d active deals", len(rows))
     return [dict(r) for r in rows]
 
 
 async def get_deal_by_id(deal_id: int) -> dict | None:
     """Fetch a single ELOC deal by its ID."""
+    logger.debug("get_deal_by_id(%s)", deal_id)
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -91,11 +108,16 @@ async def get_deal_by_id(deal_id: int) -> dict | None:
         """,
         deal_id,
     )
+    if row:
+        logger.debug("  → found deal %s (company_id=%s)", deal_id, row["company_id"])
+    else:
+        logger.warning("  → deal_id=%s not found", deal_id)
     return dict(row) if row else None
 
 
 async def get_pricing_periods_for_deal(deal_id: int) -> list[dict]:
     """Fetch all pricing periods for a given ELOC deal."""
+    logger.debug("get_pricing_periods_for_deal(%s)", deal_id)
     pool = get_pool()
     rows = await pool.fetch(
         """
@@ -115,6 +137,7 @@ async def get_pricing_periods_for_deal(deal_id: int) -> list[dict]:
         """,
         deal_id,
     )
+    logger.debug("  → %d pricing periods", len(rows))
     return [dict(r) for r in rows]
 
 
@@ -123,6 +146,7 @@ async def get_all_deals_with_pricing(company_id: int) -> list[dict]:
     Fetch all active deals for a company, each enriched with its pricing periods.
     This is the primary query used by the ELOC listing and detail endpoints.
     """
+    logger.info("get_all_deals_with_pricing(company_id=%s)", company_id)
     deals = await get_active_deals_for_company(company_id)
 
     for deal in deals:
@@ -130,4 +154,5 @@ async def get_all_deals_with_pricing(company_id: int) -> list[dict]:
             deal["eloc_deal_id"]
         )
 
+    logger.info("  → %d deals with pricing periods loaded", len(deals))
     return deals

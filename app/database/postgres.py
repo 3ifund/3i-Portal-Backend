@@ -3,16 +3,21 @@
 Uses asyncpg for async access to the on-prem DealTerms database.
 """
 
+import logging
+
 import asyncpg
 
 from app.config import settings
 
+logger = logging.getLogger("portal.db.postgres")
 _pool: asyncpg.Pool | None = None
 
 
 async def connect_postgres():
     """Create the asyncpg connection pool on app startup."""
     global _pool
+    logger.info("Connecting to PostgreSQL at %s:%s/%s (user=%s)",
+                settings.pg_host, settings.pg_port, settings.pg_database, settings.pg_user)
     _pool = await asyncpg.create_pool(
         host=settings.pg_host,
         port=settings.pg_port,
@@ -22,6 +27,7 @@ async def connect_postgres():
         min_size=2,
         max_size=10,
     )
+    logger.info("PostgreSQL pool created (min=2, max=10)")
 
 
 async def close_postgres():
@@ -29,6 +35,7 @@ async def close_postgres():
     global _pool
     if _pool:
         await _pool.close()
+        logger.info("PostgreSQL pool closed")
 
 
 def get_pool() -> asyncpg.Pool:

@@ -3,18 +3,22 @@
 Admin-only endpoints for viewing all companies, ELOCs, and purchase notices.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends
 
 from app.auth.dependencies import require_admin
 from app.auth.models import UserInfo
 from app.database.mongo import get_db
 
+logger = logging.getLogger("portal.admin")
 router = APIRouter()
 
 
 @router.get("/companies")
 async def list_companies(admin: UserInfo = Depends(require_admin)):
     """List all companies with ELOC counts."""
+    logger.info("GET /admin/companies by user=%s", admin.user_id)
     db = get_db()
     companies = []
 
@@ -35,12 +39,14 @@ async def list_companies(admin: UserInfo = Depends(require_admin)):
             "last_activity": company.get("last_activity"),
         })
 
+    logger.info("  → returned %d companies", len(companies))
     return companies
 
 
 @router.get("/elocs")
 async def list_all_elocs(admin: UserInfo = Depends(require_admin)):
     """List all ELOCs across all companies."""
+    logger.info("GET /admin/elocs by user=%s", admin.user_id)
     db = get_db()
     elocs = []
 
@@ -63,12 +69,14 @@ async def list_all_elocs(admin: UserInfo = Depends(require_admin)):
             "created_at": state_doc.get("created_at"),
         })
 
+    logger.info("  → returned %d ELOCs", len(elocs))
     return elocs
 
 
 @router.get("/purchase-notices")
 async def list_purchase_notices(admin: UserInfo = Depends(require_admin)):
     """List all purchase notices across all companies."""
+    logger.info("GET /admin/purchase-notices by user=%s", admin.user_id)
     db = get_db()
     notices = []
 
@@ -85,4 +93,5 @@ async def list_purchase_notices(admin: UserInfo = Depends(require_admin)):
             "submitted_at": doc.get("event_datetime"),
         })
 
+    logger.info("  → returned %d purchase notices", len(notices))
     return notices
