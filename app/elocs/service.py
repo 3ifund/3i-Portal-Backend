@@ -204,6 +204,64 @@ async def get_action_items(company_id: int) -> list[dict]:
     return items
 
 
+async def get_pricing_workflows(company_id: int) -> list[dict]:
+    """
+    Fetch ELOC workflow states from MongoDB where include=true.
+    Returns derived step statuses for dashboard display.
+    """
+    from app.elocs.models import build_workflow_steps
+
+    logger.info("get_pricing_workflows company_id=%s", company_id)
+    workflows = []
+    cursor = eloc_state_collection().find({"company_id": company_id, "include": True})
+    async for doc in cursor:
+        current_step = doc.get("current_step", "")
+        step_status = doc.get("step_status", "pending")
+        steps, can_remove = build_workflow_steps(current_step, step_status)
+
+        workflows.append({
+            "eloc_id": str(doc["eloc_id"]),
+            "company_id": doc["company_id"],
+            "current_step": current_step,
+            "step_status": step_status,
+            "updated_at": str(doc["updated_at"]) if doc.get("updated_at") else None,
+            "can_remove": can_remove,
+            "steps": steps,
+        })
+
+    logger.info("  Returning %d pricing workflows", len(workflows))
+    return workflows
+
+
+async def remove_pricing_workflow(eloc_id: str, company_id: int) -> bool:
+    """
+    Set include=false on an eloc_state document if removal conditions are met.
+    Allowed when: step_status is 'rejected' OR last step is 'completed'.
+    """
+    from app.elocs.models import build_workflow_steps
+
+    logger.info("remove_pricing_workflow eloc_id=%s company_id=%s", eloc_id, company_id)
+    doc = await eloc_state_collection().find_one({"eloc_id": eloc_id, "company_id": company_id})
+    if not doc:
+        logger.warning("  Document not found")
+        return False
+
+    current_step = doc.get("current_step", "")
+    step_status = doc.get("step_status", "pending")
+    _, can_remove = build_workflow_steps(current_step, step_status)
+
+    if not can_remove:
+        logger.warning("  Removal not allowed: step=%s status=%s", current_step, step_status)
+        return False
+
+    await eloc_state_collection().update_one(
+        {"eloc_id": eloc_id},
+        {"$set": {"include": False}},
+    )
+    logger.info("  Set include=false for eloc_id=%s", eloc_id)
+    return True
+
+
 async def submit_purchase_notice(
     eloc_id: str,
     company_id: str,

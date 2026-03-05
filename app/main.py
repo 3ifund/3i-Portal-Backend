@@ -2,6 +2,7 @@
 3i Fund Portal — FastAPI Application Entry Point
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from app.auth.router import router as auth_router
 from app.elocs.router import router as elocs_router
 from app.admin.router import router as admin_router
 from app.quotes.router import router as quotes_router
+from app.workflows.router import router as workflows_router, watch_eloc_state_changes
 
 # Initialize logging before anything else
 setup_logging()
@@ -36,9 +38,19 @@ async def lifespan(app: FastAPI):
     await connect_postgres()
     logger.info("PostgreSQL connected")
 
+    # Start MongoDB Change Stream watcher for workflow updates
+    watcher_task = asyncio.create_task(watch_eloc_state_changes())
+    logger.info("Change Stream watcher started")
+
     yield
 
     logger.info("=== 3i Fund Portal shutting down ===")
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Change Stream watcher stopped")
     await close_postgres()
     logger.info("PostgreSQL disconnected")
     await close_mongo()
@@ -64,6 +76,7 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(elocs_router, prefix="/elocs", tags=["elocs"])
 app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(quotes_router, prefix="/ws", tags=["quotes"])
+app.include_router(workflows_router, prefix="/ws", tags=["workflows"])
 
 
 @app.get("/health")

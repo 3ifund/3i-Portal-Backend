@@ -1,6 +1,8 @@
 """
 3i Fund Portal — WebSocket Proxy for Real-Time Quotes
 Proxies the on-prem quote WebSocket to authenticated frontend clients.
+Automatically reconnects to on-prem if the upstream connection drops,
+keeping the frontend WebSocket alive.
 """
 
 import asyncio
@@ -18,6 +20,10 @@ from app.dealterms import repository as dealterms
 logger = logging.getLogger("portal.quotes")
 router = APIRouter()
 
+# Reconnect settings
+MAX_RECONNECT_DELAY = 30  # seconds
+INITIAL_RECONNECT_DELAY = 2  # seconds
+
 
 def _get_onprem_ws_url() -> str:
     """Derive the on-prem WebSocket URL from the HTTP base URL."""
@@ -28,12 +34,28 @@ def _get_onprem_ws_url() -> str:
     return url
 
 
+async def _connect_and_subscribe(ws_url: str, symbol: str):
+    """
+    Connect to on-prem WS, receive welcome, subscribe to symbol.
+    Returns (onprem_ws, welcome_message).
+    """
+    onprem_ws = await websockets.connect(ws_url)
+    welcome = await onprem_ws.recv()
+    logger.info("WS /quotes: received welcome from on-prem: %s", welcome[:500])
+    subscribe_msg = json.dumps({"symbol": symbol})
+    logger.info("WS /quotes: subscribing to symbol=%s", symbol)
+    await onprem_ws.send(subscribe_msg)
+    return onprem_ws, welcome
+
+
 @router.websocket("/quotes")
 async def websocket_quotes(websocket: WebSocket, token: str = ""):
     """
     Proxy WebSocket for real-time quote streaming.
     Frontend connects with ?token=JWT, backend validates and relays
     to the on-prem quote feed for the user's company symbol.
+    If the on-prem connection drops, the backend reconnects automatically
+    with exponential backoff while keeping the frontend WS alive.
     """
     client_host = websocket.client.host if websocket.client else "unknown"
     logger.info("WS /quotes connection from %s", client_host)
@@ -72,72 +94,113 @@ async def websocket_quotes(websocket: WebSocket, token: str = ""):
     await websocket.accept()
     logger.info("WS /quotes: connection accepted for symbol=%s", symbol)
 
-    onprem_ws = None
-    try:
-        # Connect to on-prem WebSocket
-        ws_url = _get_onprem_ws_url()
-        logger.info("WS /quotes: connecting to on-prem at %s", ws_url)
-        onprem_ws = await websockets.connect(ws_url)
-        logger.info("WS /quotes: on-prem WS connected")
+    ws_url = _get_onprem_ws_url()
+    client_disconnected = False
 
-        # Wait for welcome message, relay it
-        welcome = await onprem_ws.recv()
-        logger.info("WS /quotes: received welcome from on-prem: %s", welcome[:500])
-        await websocket.send_text(welcome)
+    # Task that listens for client messages (and detects client disconnect)
+    client_msg_queue = asyncio.Queue()
 
-        # Subscribe to the user's company symbol
-        subscribe_msg = json.dumps({"symbol": symbol})
-        logger.info("WS /quotes: subscribing to symbol=%s", symbol)
-        await onprem_ws.send(subscribe_msg)
-
-        # Relay messages bidirectionally
-        async def relay_onprem_to_client():
-            """Forward messages from on-prem to the frontend."""
-            msg_count = 0
-            async for message in onprem_ws:
-                msg_count += 1
-                if msg_count <= 5 or msg_count % 100 == 0:
-                    logger.debug("WS /quotes: on-prem→client msg #%d: %s", msg_count, message[:500])
-                await websocket.send_text(message)
-
-        async def relay_client_to_onprem():
-            """Forward messages from the frontend to on-prem."""
+    async def listen_client():
+        """Listen for messages from the frontend client."""
+        nonlocal client_disconnected
+        try:
             while True:
                 data = await websocket.receive_text()
                 logger.debug("WS /quotes: client→on-prem: %s", data[:500])
-                await onprem_ws.send(data)
+                await client_msg_queue.put(data)
+        except WebSocketDisconnect:
+            client_disconnected = True
+            logger.info("WS /quotes: client disconnected (symbol=%s)", symbol)
+        except Exception as exc:
+            client_disconnected = True
+            logger.warning("WS /quotes: client listener error: %s", exc)
 
-        # Run both relays; when either ends, cancel the other
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(relay_onprem_to_client()),
-                asyncio.create_task(relay_client_to_onprem()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
+    client_task = asyncio.create_task(listen_client())
 
-        # Log which relay ended and why
-        for task in done:
-            exc = task.exception()
-            if exc:
-                logger.warning("WS /quotes: relay ended with exception: %s", exc)
-            else:
-                logger.info("WS /quotes: relay ended normally")
+    try:
+        reconnect_delay = INITIAL_RECONNECT_DELAY
+
+        while not client_disconnected:
+            onprem_ws = None
+            try:
+                # Connect to on-prem
+                logger.info("WS /quotes: connecting to on-prem at %s", ws_url)
+                onprem_ws, welcome = await _connect_and_subscribe(ws_url, symbol)
+                logger.info("WS /quotes: on-prem WS connected for symbol=%s", symbol)
+
+                # Reset backoff on successful connect
+                reconnect_delay = INITIAL_RECONNECT_DELAY
+
+                # Relay welcome to client
+                await websocket.send_text(welcome)
+
+                # Relay loop: on-prem → client, and forward any queued client messages
+                msg_count = 0
+                async for message in onprem_ws:
+                    if client_disconnected:
+                        break
+
+                    msg_count += 1
+                    if msg_count <= 5 or msg_count % 100 == 0:
+                        logger.debug("WS /quotes: on-prem→client msg #%d: %s", msg_count, message[:500])
+                    await websocket.send_text(message)
+
+                    # Forward any pending client messages to on-prem
+                    while not client_msg_queue.empty():
+                        client_data = client_msg_queue.get_nowait()
+                        await onprem_ws.send(client_data)
+
+                # If we get here, the on-prem WS closed (iterator ended)
+                if not client_disconnected:
+                    logger.warning("WS /quotes: on-prem WS closed for symbol=%s, will reconnect in %ds",
+                                   symbol, reconnect_delay)
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "status",
+                            "message": "Quote feed reconnecting...",
+                            "connected": False,
+                        }))
+                    except Exception:
+                        break
+
+            except (ConnectionRefusedError, OSError, websockets.exceptions.WebSocketException) as exc:
+                if client_disconnected:
+                    break
+                logger.warning("WS /quotes: on-prem connection failed for symbol=%s: %s (retry in %ds)",
+                               symbol, exc, reconnect_delay)
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status",
+                        "message": "Quote feed unavailable, retrying...",
+                        "connected": False,
+                    }))
+                except Exception:
+                    break
+
+            except Exception as exc:
+                if client_disconnected:
+                    break
+                logger.error("WS /quotes: unexpected error for symbol=%s: %s (retry in %ds)",
+                             symbol, exc, reconnect_delay, exc_info=True)
+
+            finally:
+                if onprem_ws:
+                    try:
+                        await onprem_ws.close()
+                    except Exception:
+                        pass
+
+            if client_disconnected:
+                break
+
+            # Exponential backoff before reconnecting
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, MAX_RECONNECT_DELAY)
 
     except WebSocketDisconnect:
-        logger.info("WS /quotes: client disconnected (symbol=%s)", symbol)
+        logger.info("WS /quotes: client disconnected during reconnect loop (symbol=%s)", symbol)
     except Exception as exc:
-        logger.error("WS /quotes: error for symbol=%s: %s", symbol, exc, exc_info=True)
-        try:
-            await websocket.send_text(
-                json.dumps({"type": "error", "message": str(exc)})
-            )
-        except Exception:
-            pass
+        logger.error("WS /quotes: fatal error for symbol=%s: %s", symbol, exc, exc_info=True)
     finally:
-        if onprem_ws:
-            logger.info("WS /quotes: closing on-prem WS for symbol=%s", symbol)
-            await onprem_ws.close()
+        client_task.cancel()
         logger.info("WS /quotes: session ended for symbol=%s", symbol)

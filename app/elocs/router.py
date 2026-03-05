@@ -13,6 +13,7 @@ from app.elocs import service
 from app.elocs.models import (
     ElocDetail,
     ElocSummary,
+    PricingWorkflowState,
     PurchaseNoticeRequest,
     PurchaseNoticeResponse,
     WorkflowResponse,
@@ -79,6 +80,46 @@ async def get_action_items(
     items = await service.get_action_items(company_id)
     logger.info("  → returned %d action items", len(items))
     return items
+
+
+@router.get("/pricing-workflows", response_model=list[PricingWorkflowState])
+async def get_pricing_workflows(
+    user: UserInfo = Depends(get_current_user),
+):
+    """Get workflow states for ELOCs currently pricing (include=true)."""
+    logger.info("GET /elocs/pricing-workflows user=%s company_id=%s", user.user_id, user.company_id)
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    workflows = await service.get_pricing_workflows(company_id)
+    logger.info("  → returned %d pricing workflows", len(workflows))
+    return workflows
+
+
+@router.post("/{eloc_id}/workflow/remove")
+async def remove_pricing_workflow(
+    eloc_id: str,
+    user: UserInfo = Depends(get_current_user),
+):
+    """Remove an ELOC from 'Currently Pricing' by setting include=false."""
+    logger.info("POST /elocs/%s/workflow/remove user=%s", eloc_id, user.user_id)
+    company_id = int(user.company_id) if user.company_id else None
+    if company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no company_id assigned",
+        )
+    removed = await service.remove_pricing_workflow(eloc_id, company_id)
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove: workflow must be rejected or fully completed",
+        )
+    logger.info("  → ELOC %s removed from pricing workflows", eloc_id)
+    return {"status": "removed"}
 
 
 @router.get("/{eloc_id}", response_model=ElocDetail)
